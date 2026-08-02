@@ -35,7 +35,7 @@ or [build it yourself](#build):
 | --- | --- |
 | Windows (Intel/AMD) | `apng-codec_win-x64.igplugin.zip` |
 | Windows (ARM) | `apng-codec_win-arm64.igplugin.zip` |
-| Linux | `apng-codec_linux-64.igplugin.zip` |
+| Linux | `apng-codec_linux-x64.igplugin.zip` |
 | macOS (Apple Silicon) | `apng-codec_mac-arm64.igplugin.zip` |
 
 In ImageGlass, open **Settings > Plugins > Add** and pick the `.igplugin.zip`, then enable

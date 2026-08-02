@@ -42,7 +42,7 @@ jobs:
         include:
           - { os: windows-latest, rid: win-x64,   platform: x64,   arch: win-x64 }
           - { os: windows-latest, rid: win-arm64, platform: ARM64, arch: win-arm64 }
-          - { os: ubuntu-latest,  rid: linux-x64, platform: x64,   arch: linux-64 }
+          - { os: ubuntu-latest,  rid: linux-x64, platform: x64,   arch: linux-x64 }
           - { os: macos-latest,   rid: osx-arm64, platform: ARM64, arch: mac-arm64 }
     runs-on: ${{ matrix.os }}
 
@@ -80,15 +80,19 @@ jobs:
           --output dist/${{ matrix.rid }}
 
       - name: Stage the plugin folder
-        # Drop the debug symbols (libSkiaSharp.pdb alone is ~80 MB) and lay the payload out
-        # as the folder users copy into ImageGlass's _plugins directory. Symbol extensions
-        # are .pdb on Windows, .dbg on Linux and .dSYM (a directory) on macOS.
+        # Lay the payload out as the folder users copy into ImageGlass's _plugins directory,
+        # minus two things:
+        #   - debug symbols: .pdb on Windows, .dbg on Linux, .dSYM (a directory) on macOS;
+        #   - libSkiaSharp: ImageGlass already ships it next to its own executable, so the
+        #     plugin resolves it from the host and a bundled second copy is dead weight
+        #     (~12 MB of library plus ~80 MB of symbols).
         shell: pwsh
         run: |
           $staged = Join-Path "staging" $env:PLUGIN_FOLDER
           New-Item -ItemType Directory -Force -Path $staged | Out-Null
           Get-ChildItem "dist/${{ matrix.rid }}" -File |
             Where-Object { $_.Extension -notin ".pdb", ".dbg", ".dSYM" } |
+            Where-Object { $_.Name -notlike "libSkiaSharp*" } |
             Copy-Item -Destination $staged
           Get-ChildItem $staged | Select-Object Name, Length
 

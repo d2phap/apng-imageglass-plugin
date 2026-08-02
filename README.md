@@ -11,7 +11,7 @@ right delay for every frame.
 | --- | --- |
 | **Extension** | `.apng` |
 | **Plugin id** | `Plugin_ApngCodec` |
-| **Platforms** | Windows, Linux, macOS (x64 and ARM64) |
+| **Platforms** | Windows (x64, ARM64), Linux (x64), macOS (ARM64) |
 | **Requires** | ImageGlass 10 |
 | **License** | MIT |
 
@@ -28,25 +28,20 @@ right delay for every frame.
 
 ## Install
 
-1. Download the release archive for your platform, or [build it yourself](#build).
-2. Copy the folder into ImageGlass's `_plugins` directory:
+Grab the package for your platform from the [latest release](https://github.com/d2phap/apng-imageglass-plugin/releases),
+or [build it yourself](#build):
 
-   | Platform | Config directory |
-   | --- | --- |
-   | Windows | `%LocalAppData%\ImageGlass` |
-   | Linux | `~/.local/share/ImageGlass` |
-   | macOS | `~/Library/Application Support/ImageGlass` |
+| Platform | Package |
+| --- | --- |
+| Windows (Intel/AMD) | `apng-codec_win-x64.igplugin.zip` |
+| Windows (ARM) | `apng-codec_win-arm64.igplugin.zip` |
+| Linux | `apng-codec_linux-64.igplugin.zip` |
+| macOS (Apple Silicon) | `apng-codec_mac-arm64.igplugin.zip` |
 
-   ```text
-   %LOCALAPPDATA%\ImageGlass\_plugins\Plugin_ApngCodec\
-       ApngCodec.dll
-       igplugin.json
-       libSkiaSharp.dll
-   ```
-
-3. Start ImageGlass and enable **APNG Codec** in **Settings > Plugins**. A newly installed
-   plugin stays untrusted (and unloaded) until you do; enabling pins the library's SHA-256.
-4. Apply the extra step below, then restart ImageGlass.
+In ImageGlass, open **Settings > Plugins > Add** and pick the `.igplugin.zip`, then enable
+**APNG Codec** in the same list. A newly installed plugin stays untrusted (and unloaded)
+until you enable it; enabling pins the library's SHA-256. Finally apply the extra step
+below and restart ImageGlass.
 
 ### Required: allow the plugin to override the built-in decoder
 
@@ -91,61 +86,23 @@ want that.
 ## Build
 
 Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download) and a native AOT
-toolchain (on Windows, the "Desktop development with C++" workload).
+toolchain: the "Desktop development with C++" workload on Windows, `clang` + zlib dev
+packages on Linux, Xcode command line tools on macOS.
 
-```powershell
-# Windows x64
-dotnet publish source/ApngCodec.csproj -c Release -r win-x64 -p:Platform=x64 -o dist/win-x64
-```
+Targets match the platforms ImageGlass ships on: **win-x64**, **win-arm64**, **linux-x64**
+and **osx-arm64**.
 
-```bash
-# Linux x64
-dotnet publish source/ApngCodec.csproj -c Release -r linux-x64 -p:Platform=x64 -o dist/linux-x64
+### In VS Code
 
-# macOS Apple Silicon
-dotnet publish source/ApngCodec.csproj -c Release -r osx-arm64 -p:Platform=ARM64 -o dist/osx-arm64
-```
+`.vscode/tasks.json` has a task per target — **Terminal > Run Task**, then pick one:
 
-The output folder is the plugin folder: `ApngCodec.dll` (or `.so` / `.dylib`),
-`igplugin.json`, and the `libSkiaSharp` native asset. Copy the whole folder to `_plugins`.
-
-> `Platforms` is `x64;ARM64`, so `-p:Platform=…` is required — a plain `dotnet build` with
-> the default `AnyCPU` will not configure.
-
-## How it works
-
-ImageGlass loads codec plugins **in-process** through the C ABI defined by the
-[ImageGlass SDK](https://github.com/ImageGlass/SDK), consumed here as the
-[`ImageGlass.SDK`](https://www.nuget.org/packages/ImageGlass.SDK) NuGet package. The plugin
-exports one function, `ig_plugin_get_api`, and returns function-pointer tables for the
-codec.
-
-| File | Role |
+| Task | Output |
 | --- | --- |
-| `source/ApngCodecPlugin.cs` | The ABI surface: entry point, API tables, codec callbacks, native buffer ownership |
-| `source/Apng/ApngDocument.cs` | Parses one file and replays the canvas frame by frame |
-| `source/Apng/ApngDocumentCache.cs` | Reference-counted LRU cache of parsed files |
-| `source/Apng/PngChunkScanner.cs` | Reads `iCCP` / `sRGB` / `tRNS` straight from the chunk stream |
-| `source/Apng/HostChannel.cs` | Host log channel and cancellation polling |
-| `source/LibAPNG/` | Vendored [APNG.NET](https://github.com/xupefei/APNG.NET) chunk parser |
-
-### Frame composition
-
-The host requires every decoded frame to be a **fully composed** canvas: it does no
-sub-rect composition and no disposal replay. APNG, however, stores each frame as a
-sub-rectangle with its own blend and disposal operation, so the plugin does that work:
-
-1. Rebuild a standalone PNG for the frame's sub-rectangle (APNG.NET re-wraps the `fdAT`
-   payload as `IDAT` and patches `IHDR` to the frame size).
-2. Decode it with SkiaSharp to straight-alpha BGRA.
-3. Merge it into the canvas — `SOURCE` overwrites the rectangle alpha and all, `OVER`
-   alpha-composites.
-4. Copy the canvas out as the frame ImageGlass displays.
-5. Apply the disposal op to prepare the canvas for the next frame — `BACKGROUND` clears the
-   rectangle, `PREVIOUS` restores the snapshot taken before step 3.
-
-Because frame *N* depends on frame *N-1*, the canvas keeps its playhead: a sequential
-request continues from where it left off, and a backwards request replays from frame 0.
+| `publish: Windows x64` / `publish: Windows ARM64` | `dist/win-x64`, `dist/win-arm64` |
+| `publish: Windows (all)` | both Windows architectures |
+| `publish: Linux x64` | `dist/linux-x64` |
+| `publish: macOS ARM64` | `dist/osx-arm64` |
+| `build` (default build task) | compile-only check, no native AOT |
 
 ## Limitations
 

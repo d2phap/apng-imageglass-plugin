@@ -1,0 +1,137 @@
+name: Release
+
+# Manually triggered from the Actions tab. Native-AOT-publishes the plugin for every
+# platform ImageGlass supports, then creates a GitHub release with one
+# apng-codec_<arch>.igplugin.zip per platform attached. Each package holds a
+# "Plugin_ApngCodec" folder, which both Settings > Plugins > Add and a manual copy
+# into the _plugins directory accept.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 1.2.3 or 1.2.3-rc.1 (no leading 'v')"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # needed to create the git tag and GitHub release
+
+# Never run two releases at once; don't cancel a publish that's in flight.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  PLUGIN_FOLDER: Plugin_ApngCodec
+
+jobs:
+  build:
+    # Only allow releasing from main. Triggering from another branch is skipped.
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      # Build every target even if one fails, so a single run shows all the damage.
+      # The release job still requires all of them to succeed.
+      fail-fast: false
+      matrix:
+        # "arch" is the label used in the package filename; it is not always the .NET RID.
+        include:
+          - { os: windows-latest, rid: win-x64,   platform: x64,   arch: win-x64 }
+          - { os: windows-latest, rid: win-arm64, platform: ARM64, arch: win-arm64 }
+          - { os: ubuntu-latest,  rid: linux-x64, platform: x64,   arch: linux-64 }
+          - { os: macos-latest,   rid: osx-arm64, platform: ARM64, arch: mac-arm64 }
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install native AOT prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Stamp the manifest version
+        # igplugin.json is what ImageGlass shows in Settings > Plugins, so keep it in
+        # step with the assembly version rather than letting the two drift.
+        shell: pwsh
+        run: |
+          $path = "source/igplugin.json"
+          $manifest = Get-Content $path -Raw | ConvertFrom-Json
+          $manifest.version = "${{ inputs.version }}"
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content $path -Encoding utf8
+          Get-Content $path
+
+      - name: Publish (${{ matrix.rid }})
+        run: >
+          dotnet publish source/ApngCodec.csproj
+          --configuration Release
+          --runtime ${{ matrix.rid }}
+          -p:Platform=${{ matrix.platform }}
+          -p:Version=${{ inputs.version }}
+          --output dist/${{ matrix.rid }}
+
+      - name: Stage the plugin folder
+        # Drop the debug symbols (libSkiaSharp.pdb alone is ~80 MB) and lay the payload out
+        # as the folder users copy into ImageGlass's _plugins directory. Symbol extensions
+        # are .pdb on Windows, .dbg on Linux and .dSYM (a directory) on macOS.
+        shell: pwsh
+        run: |
+          $staged = Join-Path "staging" $env:PLUGIN_FOLDER
+          New-Item -ItemType Directory -Force -Path $staged | Out-Null
+          Get-ChildItem "dist/${{ matrix.rid }}" -File |
+            Where-Object { $_.Extension -notin ".pdb", ".dbg", ".dSYM" } |
+            Copy-Item -Destination $staged
+          Get-ChildItem $staged | Select-Object Name, Length
+
+      - name: Pack apng-codec_${{ matrix.arch }}.igplugin.zip
+        # Zip on every platform: ILCompiler chmods a shared library to 644, so there is no
+        # executable bit for zip to lose, and Settings > Plugins > Add only reads .zip.
+        shell: pwsh
+        run: Compress-Archive -Path "staging/$env:PLUGIN_FOLDER" -DestinationPath "apng-codec_${{ matrix.arch }}.igplugin.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apng-codec_${{ matrix.arch }}
+          path: apng-codec_${{ matrix.arch }}.igplugin.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for release-note generation
+
+      - name: Download all platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lh artifacts
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "v${{ inputs.version }}"
+          artifacts/*.igplugin.zip
+          --target "${{ github.sha }}"
+          --title "v${{ inputs.version }}"
+          --generate-notes
+          ${{ inputs.prerelease && '--prerelease' || '' }}

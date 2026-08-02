@@ -34,10 +34,37 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Manifest must sit next to the published .dll so the host can discover the plugin. -->
+    <!-- Manifest must sit next to the published library so the host can discover the plugin. -->
     <None Update="igplugin.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
+
+  <!--
+    The host only accepts a manifest "executable" carrying the target platform's native
+    library extension, so rewrite the published copy for non-Windows runtimes. The
+    checked-in manifest keeps the Windows name.
+  -->
+  <Target Name="StampPluginManifestExecutable" AfterTargets="Publish">
+    <PropertyGroup>
+      <_PluginLibExt>.dll</_PluginLibExt>
+      <_PluginLibExt Condition="$(RuntimeIdentifier.StartsWith('linux'))">.so</_PluginLibExt>
+      <_PluginLibExt Condition="$(RuntimeIdentifier.StartsWith('osx'))">.dylib</_PluginLibExt>
+      <_PluginManifest>$(PublishDir)igplugin.json</_PluginManifest>
+      <_StampManifest>false</_StampManifest>
+      <_StampManifest Condition="'$(_PluginLibExt)' != '.dll' And Exists('$(_PluginManifest)')">true</_StampManifest>
+      <_PluginManifestText Condition="'$(_StampManifest)' == 'true'">$([System.IO.File]::ReadAllText('$(_PluginManifest)'))</_PluginManifestText>
+      <_PluginManifestText Condition="'$(_StampManifest)' == 'true'">$(_PluginManifestText.Replace('$(AssemblyName).dll', '$(AssemblyName)$(_PluginLibExt)'))</_PluginManifestText>
+    </PropertyGroup>
+
+    <WriteLinesToFile Condition="'$(_StampManifest)' == 'true'"
+                      File="$(_PluginManifest)"
+                      Lines="$(_PluginManifestText)"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+
+    <Message Condition="'$(_StampManifest)' == 'true'" Importance="high"
+             Text="igplugin.json executable stamped as $(AssemblyName)$(_PluginLibExt)" />
+  </Target>
 </Project>

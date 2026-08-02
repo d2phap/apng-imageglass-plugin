@@ -1,0 +1,130 @@
+{
+    // Targets match the platforms ImageGlass ships: win-x64, win-arm64, linux-x64, osx-arm64.
+    // Native AOT cannot cross-compile between operating systems: run each publish task
+    // on the OS it targets. Cross-architecture on the same OS (x64 host -> ARM64) works
+    // when the matching native toolchain is installed.
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}"
+    },
+    "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+    },
+    "tasks": [
+        {
+            "label": "build",
+            "detail": "Compile only (no native AOT) - quick syntax/analyzer check.",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "source/ApngCodec.csproj",
+                "-c",
+                "Debug",
+                "-p:Platform=x64"
+            ],
+            "problemMatcher": "$msCompile",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+
+        {
+            "label": "publish: Windows x64",
+            "detail": "Native AOT -> dist/win-x64. Run on Windows.",
+            "type": "shell",
+            // vcvarsall.bat invokes vswhere.exe by bare name, and ILCompiler captures that
+            // script's output to derive the link.exe path - so outside a Developer Command
+            // Prompt the "not recognized" stderr ends up *inside* $(CppLinker) and the native
+            // link fails. The Installer directory has to be prepended by the shell rather than
+            // through "options.env": VS Code resolves the task's own executable against an
+            // overridden PATH, and fails to find dotnet on it ("Path to shell executable ...
+            // does not exist").
+            "command": "$env:PATH = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer;' + $env:PATH; dotnet publish source/ApngCodec.csproj -c Release -r win-x64 -p:Platform=x64 -o dist/win-x64; exit $LASTEXITCODE",
+            // Pinned so the command above does not depend on the default terminal profile.
+            "options": {
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
+            "problemMatcher": "$msCompile",
+            "group": "build"
+        },
+        {
+            "label": "publish: Windows ARM64",
+            "detail": "Native AOT -> dist/win-arm64. Run on Windows (x64 host works with the ARM64 VC tools).",
+            "type": "shell",
+            // Same vswhere/PATH caveat as the x64 task above.
+            "command": "$env:PATH = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer;' + $env:PATH; dotnet publish source/ApngCodec.csproj -c Release -r win-arm64 -p:Platform=ARM64 -o dist/win-arm64; exit $LASTEXITCODE",
+            "options": {
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
+            "problemMatcher": "$msCompile",
+            "group": "build"
+        },
+
+        {
+            "label": "publish: Linux x64",
+            "detail": "Native AOT -> dist/linux-x64. Run on Linux (needs clang + zlib dev packages).",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "publish",
+                "source/ApngCodec.csproj",
+                "-c",
+                "Release",
+                "-r",
+                "linux-x64",
+                "-p:Platform=x64",
+                "-o",
+                "dist/linux-x64"
+            ],
+            "problemMatcher": "$msCompile",
+            "group": "build"
+        },
+
+        {
+            "label": "publish: macOS ARM64",
+            "detail": "Native AOT -> dist/osx-arm64. Run on macOS (needs Xcode command line tools).",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "publish",
+                "source/ApngCodec.csproj",
+                "-c",
+                "Release",
+                "-r",
+                "osx-arm64",
+                "-p:Platform=ARM64",
+                "-o",
+                "dist/osx-arm64"
+            ],
+            "problemMatcher": "$msCompile",
+            "group": "build"
+        },
+        {
+            "label": "publish: Windows (all)",
+            "detail": "Both Windows architectures, one after the other.",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "publish: Windows x64",
+                "publish: Windows ARM64"
+            ],
+            "problemMatcher": [],
+            "group": "build"
+        }
+    ]
+}

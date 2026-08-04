@@ -1,4 +1,4 @@
-/*
+﻿/*
 ImageGlass APNG Codec Plugin
 Copyright (C) 2026 DUONG DIEU PHAP
 MIT License
@@ -14,7 +14,6 @@ using ApngCodec.Apng;
 using ImageGlass.SDK.Plugins;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Threading;
 
 namespace ApngCodec;
 
@@ -27,17 +26,19 @@ internal static unsafe class ApngCodecPlugin
 
     private const string PluginIdString = "Plugin_ApngCodec";
     private const string PluginNameString = "APNG Codec";
-    private const string VersionString = "1.0.0";
+    private const string VersionString = "1.1.0";
     private const string CodecIdString = "plugin.apng.codec";
-    private const string CodecNameString = "Animated PNG";
+    private const string CodecNameString = "APNG Codec";
 
-    private static readonly string[] SupportedExtensions = [".apng"];
+    // Both are declared; the user unticks ".png" in Settings > Plugins to leave it to Skia.
+    private static readonly string[] DecodeExtensions = [".apng", ".png"];
 
     /// <summary>PNG signature shared by every APNG file.</summary>
     private static ReadOnlySpan<byte> PngSignature => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
     private static IGPluginApi* _pluginApi;
     private static IGCodecApi* _codecApi;
+    private static IGCodecCapability* _capability;
 
     // UTF-16 string buffers (process-lifetime).
     private static char* _bufPluginId;
@@ -74,6 +75,7 @@ internal static unsafe class ApngCodecPlugin
         HostChannel.Attach(hostApi);
 
         InitStrings();
+        InitCapability();
         InitCodecApi();
         InitPluginApi();
         return _pluginApi;
@@ -88,6 +90,7 @@ internal static unsafe class ApngCodecPlugin
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnShutdown() { }
 
+
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static IGStatus OnGetCodec(int index, IGCodecApi** outCodecApi)
     {
@@ -101,10 +104,10 @@ internal static unsafe class ApngCodecPlugin
     // ------------------------------ Codec API callbacks ------------------------------
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    private static IGStatus CodecGetCapability(IGCodecCapability* outCap)
+    private static IGStatus CodecGetCapability(IGCodecCapability** outCap)
     {
         if (outCap == null) return IGStatus.InvalidArg;
-        *outCap = BuildCapability();
+        *outCap = _capability;
         return IGStatus.OK;
     }
 
@@ -115,7 +118,7 @@ internal static unsafe class ApngCodecPlugin
         if (ext.Data == null || ext.Length <= 0) return 0;
 
         var s = new ReadOnlySpan<char>(ext.Data, ext.Length);
-        foreach (var supported in SupportedExtensions)
+        foreach (var supported in DecodeExtensions)
         {
             if (s.Equals(supported, StringComparison.OrdinalIgnoreCase)) return 1;
         }
@@ -377,26 +380,32 @@ internal static unsafe class ApngCodecPlugin
     }
 
 
-    private static IGCodecCapability BuildCapability()
+    private static void InitCapability()
     {
-        return new IGCodecCapability
-        {
-            CodecId = MakeStringRef(_bufCodecId, CodecIdString.Length),
-            CodecName = MakeStringRef(_bufCodecName, CodecNameString.Length),
+        _capability = (IGCodecCapability*)NativeMemory.AllocZeroed((nuint)sizeof(IGCodecCapability));
+        _capability->StructSize = sizeof(IGCodecCapability);
+        _capability->CodecId = MakeStringRef(_bufCodecId, CodecIdString.Length);
+        _capability->CodecName = MakeStringRef(_bufCodecName, CodecNameString.Length);
 
-            // ".apng" is a built-in format, so the host clamps these below the built-in
-            // ceiling unless the plugin's trust entry sets AllowOverrideBuiltins.
-            MetadataPriority = 200,
-            DecodePriority = 200,
+        // Enabling a plugin is an act of trust, so the host honors these as reported. Claiming
+        // ".png" is deliberate: the user unticks it in Settings > Plugins to leave it to Skia.
+        _capability->MetadataPriority = 200;
+        _capability->DecodePriority = 200;
 
-            SupportsMetadata = 1,
-            SupportsStaticRaster = 1,
-            SupportsColorProfiles = 1,
-            SupportsAnimation = 1,
+        _capability->SupportsMetadata = 1;
+        _capability->SupportsColorProfiles = 1;
+        _capability->SupportsStaticRasterDecoding = 1;
+        _capability->SupportsAnimationDecoding = 1;
 
-            ExtensionCount = SupportedExtensions.Length,
-            Extensions = _extArray,
-        };
+        // Read-only codec: there is no APNG encoder here.
+        _capability->SupportsStaticRasterEncoding = 0;
+        _capability->SupportsMultiFrameEncoding = 0;
+        _capability->EncodePriority = 0;
+        _capability->EncodeExtensionCount = 0;
+        _capability->EncodeExtensions = null;
+
+        _capability->DecodeExtensionCount = DecodeExtensions.Length;
+        _capability->DecodeExtensions = _extArray;
     }
 
 
@@ -412,12 +421,12 @@ internal static unsafe class ApngCodecPlugin
         _bufCodecId = AllocUtf16(CodecIdString);
         _bufCodecName = AllocUtf16(CodecNameString);
 
-        var count = SupportedExtensions.Length;
+        var count = DecodeExtensions.Length;
         _bufExtensions = (char**)NativeMemory.AllocZeroed((nuint)(sizeof(nint) * count));
         _extArray = (IGStringRef*)NativeMemory.AllocZeroed((nuint)(sizeof(IGStringRef) * count));
         for (var i = 0; i < count; i++)
         {
-            var ext = SupportedExtensions[i];
+            var ext = DecodeExtensions[i];
             _bufExtensions[i] = AllocUtf16(ext);
             _extArray[i] = MakeStringRef(_bufExtensions[i], ext.Length);
         }
@@ -427,6 +436,7 @@ internal static unsafe class ApngCodecPlugin
     private static void InitCodecApi()
     {
         _codecApi = (IGCodecApi*)NativeMemory.AllocZeroed((nuint)sizeof(IGCodecApi));
+        _codecApi->StructSize = sizeof(IGCodecApi);
         _codecApi->GetCapability = &CodecGetCapability;
         _codecApi->CanHandleExtension = &CodecCanHandleExtension;
         _codecApi->CanHandleSignature = &CodecCanHandleSignature;

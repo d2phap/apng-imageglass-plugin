@@ -81,17 +81,19 @@ jobs:
 
       - name: Stage the plugin folder
         # Lay the payload out as the folder users copy into ImageGlass's _plugins directory,
-        # minus two things:
+        # minus three things:
         #   - debug symbols: .pdb on Windows, .dbg on Linux, .dSYM (a directory) on macOS;
         #   - libSkiaSharp: ImageGlass already ships it next to its own executable, so the
         #     plugin resolves it from the host and a bundled second copy is dead weight
-        #     (~12 MB of library plus ~80 MB of symbols).
+        #     (~12 MB of library plus ~80 MB of symbols);
+        #   - .xml: the SDK's IntelliSense docs ride along from the package reference and are
+        #     ~120 KB of nothing the host ever reads.
         shell: pwsh
         run: |
           $staged = Join-Path "staging" $env:PLUGIN_FOLDER
           New-Item -ItemType Directory -Force -Path $staged | Out-Null
           Get-ChildItem "dist/${{ matrix.rid }}" -File |
-            Where-Object { $_.Extension -notin ".pdb", ".dbg", ".dSYM" } |
+            Where-Object { $_.Extension -notin ".pdb", ".dbg", ".dSYM", ".xml" } |
             Where-Object { $_.Name -notlike "libSkiaSharp*" } |
             Copy-Item -Destination $staged
           Get-ChildItem $staged | Select-Object Name, Length

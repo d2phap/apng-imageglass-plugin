@@ -1,4 +1,4 @@
-/*
+﻿/*
 ImageGlass APNG Codec Plugin
 Copyright (C) 2026 DUONG DIEU PHAP
 MIT License

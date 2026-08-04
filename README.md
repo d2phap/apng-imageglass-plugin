@@ -1,4 +1,4 @@
-# APNG Codec for ImageGlass
+﻿# APNG Codec for ImageGlass
 
 An **animated PNG (`.apng`) codec plugin** for [ImageGlass](https://imageglass.org) 10.
 
@@ -9,7 +9,7 @@ right delay for every frame.
 
 | | |
 | --- | --- |
-| **Extension** | `.apng` |
+| **Extensions** | `.apng`, `.png` (either can be switched off in Settings > Plugins) |
 | **Plugin id** | `Plugin_ApngCodec` |
 | **Platforms** | Windows (x64, ARM64), Linux (x64), macOS (ARM64) |
 | **Requires** | ImageGlass 10 |
@@ -40,48 +40,21 @@ or [build it yourself](#build):
 
 In ImageGlass, open **Settings > Plugins > Add** and pick the `.igplugin.zip`, then enable
 **APNG Codec** in the same list. A newly installed plugin stays untrusted (and unloaded)
-until you enable it; enabling pins the library's SHA-256. Finally apply the extra step
-below and restart ImageGlass.
+until you enable it; enabling pins the library's SHA-256.
 
-### Required: allow the plugin to override the built-in decoder
+That is the whole install. Enabling a plugin is an act of trust, so ImageGlass honours the
+priority this codec reports and lets it take `.apng` from the built-in decoder. No config
+editing is needed. Open an APNG and the title bar should show a frame counter such as
+`29/40 frame(s)`.
 
-`.apng` is already in ImageGlass's built-in format list, so the host deliberately ranks
-plugins **below** its own decoders for that extension. Until you opt in, the built-in
-decoder keeps winning and you still get a still image.
+### Choosing which formats it handles
 
-Close ImageGlass (it rewrites its config on exit), open
-`%LOCALAPPDATA%\ImageGlass\igconfig.json`, and add `AllowOverrideBuiltins` to this plugin's
-trust entry:
+The plugin claims **both `.apng` and `.png`**, because many animated PNGs ship with a plain
+`.png` extension. That means it becomes the decoder for every PNG you open, animated or not.
 
-```jsonc
-"PluginTrust": {
-  "Plugin_ApngCodec": {
-    "Enabled": true,
-    "Hash": "…",              // written for you when you enable the plugin
-    "AllowOverrideBuiltins": true
-  }
-}
-```
-
-Then start ImageGlass and open an APNG. The title bar should show a frame counter such as
-`29/40 frame(s)` and the image should animate. If there is no frame counter, the override
-did not take effect.
-
-> Toggling the plugin off and on again in **Settings > Plugins** rewrites the trust entry
-> and resets `AllowOverrideBuiltins` to `false`. Re-apply it after re-enabling, or after
-> replacing the library with a new build.
-
-### Also want plain `.png` APNG files?
-
-Many animated PNGs are published with the `.png` extension, which the built-in decoder
-owns. To route those here too, add a `supportedExtensions` override to `igplugin.json`:
-
-```jsonc
-"supportedExtensions": ".apng;.png"
-```
-
-This makes the plugin handle **every** PNG, not just animated ones, so only do it if you
-want that.
+If you would rather leave ordinary PNGs to the built-in decoder, open the plugin from
+**Settings > Plugins** (click its name) and untick **Decode** for `.png`. The change takes
+effect immediately, and it survives disabling and re-enabling the plugin.
 
 ## Build
 

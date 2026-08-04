@@ -1,8 +1,8 @@
 {
   "id": "Plugin_ApngCodec",
   "name": "APNG Codec",
-  "description": "Plays animated PNG (.apng) files in ImageGlass, compositing every frame according to the APNG blend and disposal rules.",
-  "version": "1.0.0",
+  "description": "Plays animated PNG files in ImageGlass, compositing every frame according to the APNG blend and disposal rules. Claims both .apng and .png; untick either in Settings > Plugins to leave it to the built-in decoder.",
+  "version": "1.1.0",
   "author": "Duong Dieu Phap",
   "website": "https://github.com/d2phap/apng-imageglass-plugin",
   "kind": "Codec",

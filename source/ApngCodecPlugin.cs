@@ -63,6 +63,9 @@ internal static unsafe class ApngCodecPlugin
 
 
     // ------------------------------ Entry point ------------------------------
+    //
+    // Every [UnmanagedCallersOnly] entry point below is a hard ABI boundary: an escaping managed
+    // exception cannot be caught by the host and kills the app, so each one ends in a catch.
 
     [UnmanagedCallersOnly(EntryPoint = IGNativeAbi.ENTRY_POINT_NAME, CallConvs = [typeof(CallConvCdecl)])]
     public static IGPluginApi* GetApi(int hostAbiVersion, IGHostApi* hostApi)
@@ -74,10 +77,18 @@ internal static unsafe class ApngCodecPlugin
         if (_pluginApi != null) return _pluginApi;
         HostChannel.Attach(hostApi);
 
-        InitStrings();
-        InitCapability();
-        InitCodecApi();
-        InitPluginApi();
+        try
+        {
+            InitStrings();
+            InitCapability();
+            InitCodecApi();
+            InitPluginApi();
+        }
+        catch
+        {
+            // null is the ABI's "refused"; the host logs it and skips the plugin
+            return null;
+        }
         return _pluginApi;
     }
 
@@ -140,39 +151,47 @@ internal static unsafe class ApngCodecPlugin
         if (outInfo == null) return IGStatus.InvalidArg;
         *outInfo = default;
 
-        if (!TryGetPath(filePath, out var path)) return IGStatus.InvalidArg;
-        if (HostChannel.IsCanceled(cancellation)) return IGStatus.Canceled;
-
-        var document = ApngDocumentCache.Acquire(path, out var status);
-        if (document is null) return status;
-
         try
         {
-            outInfo->Width = document.Width;
-            outInfo->Height = document.Height;
-            outInfo->PixelFormat = (int)IGPixelFormat.Bgra8Unorm;
-            outInfo->HasAlpha = document.HasAlpha ? 1 : 0;
-            outInfo->HdrTransferFn = (int)IGHdrTransferFn.None;
-            outInfo->ColorSpace = (int)document.ColorSpace;
-            outInfo->Orientation = 1;
-            outInfo->FrameCount = document.FrameCount;
-            outInfo->FileSizeBytes = document.FileSizeBytes;
+            if (!TryGetPath(filePath, out var path)) return IGStatus.InvalidArg;
+            if (HostChannel.IsCanceled(cancellation)) return IGStatus.Canceled;
 
-            if (document.IccProfile is { Length: > 0 } icc)
+            var document = ApngDocumentCache.Acquire(path, out var status);
+            if (document is null) return status;
+
+            try
             {
-                var block = PublishIccProfile(icc);
-                if (block != null)
-                {
-                    outInfo->IccProfileData = block;
-                    outInfo->IccProfileSize = icc.Length;
-                }
-            }
+                outInfo->Width = document.Width;
+                outInfo->Height = document.Height;
+                outInfo->PixelFormat = (int)IGPixelFormat.Bgra8Unorm;
+                outInfo->HasAlpha = document.HasAlpha ? 1 : 0;
+                outInfo->HdrTransferFn = (int)IGHdrTransferFn.None;
+                outInfo->ColorSpace = (int)document.ColorSpace;
+                outInfo->Orientation = 1;
+                outInfo->FrameCount = document.FrameCount;
+                outInfo->FileSizeBytes = document.FileSizeBytes;
 
-            return IGStatus.OK;
+                if (document.IccProfile is { Length: > 0 } icc)
+                {
+                    var block = PublishIccProfile(icc);
+                    if (block != null)
+                    {
+                        outInfo->IccProfileData = block;
+                        outInfo->IccProfileSize = icc.Length;
+                    }
+                }
+
+                return IGStatus.OK;
+            }
+            finally
+            {
+                ApngDocumentCache.Release(document);
+            }
         }
-        finally
+        catch (Exception ex)
         {
-            ApngDocumentCache.Release(document);
+            HostChannel.Log(4, $"ApngCodec: LoadMetadata failed. {ex}");
+            return IGStatus.Internal;
         }
     }
 
@@ -181,7 +200,19 @@ internal static unsafe class ApngCodecPlugin
     private static IGStatus CodecDecodeStaticRaster(IGStringRef filePath, int frameIndex,
         IGPixelBuffer* outBuf, void* cancellation)
     {
-        return DecodeFrame(filePath, frameIndex, outBuf, cancellation);
+        try
+        {
+            return DecodeFrame(filePath, frameIndex, outBuf, cancellation);
+        }
+        catch (OutOfMemoryException)
+        {
+            return IGStatus.OutOfMemory;
+        }
+        catch (Exception ex)
+        {
+            HostChannel.Log(4, $"ApngCodec: DecodeStaticRaster failed. {ex}");
+            return IGStatus.Internal;
+        }
     }
 
 
@@ -189,7 +220,19 @@ internal static unsafe class ApngCodecPlugin
     private static IGStatus CodecDecodeAnimationFrame(IGStringRef filePath, int frameIndex,
         IGPixelBuffer* outBuf, void* cancellation)
     {
-        return DecodeFrame(filePath, frameIndex, outBuf, cancellation);
+        try
+        {
+            return DecodeFrame(filePath, frameIndex, outBuf, cancellation);
+        }
+        catch (OutOfMemoryException)
+        {
+            return IGStatus.OutOfMemory;
+        }
+        catch (Exception ex)
+        {
+            HostChannel.Log(4, $"ApngCodec: DecodeAnimationFrame failed. {ex}");
+            return IGStatus.Internal;
+        }
     }
 
 
@@ -199,41 +242,53 @@ internal static unsafe class ApngCodecPlugin
         if (outInfo == null) return IGStatus.InvalidArg;
         *outInfo = default;
 
-        if (!TryGetPath(filePath, out var path)) return IGStatus.InvalidArg;
-        if (HostChannel.IsCanceled(cancellation)) return IGStatus.Canceled;
-
-        var document = ApngDocumentCache.Acquire(path, out var status);
-        if (document is null) return status;
-
         try
         {
-            var count = document.FrameCount;
-            var frames = (IGAnimationFrameInfo*)NativeMemory.Alloc(
-                (nuint)(sizeof(IGAnimationFrameInfo) * count));
-            if (frames == null) return IGStatus.OutOfMemory;
+            if (!TryGetPath(filePath, out var path)) return IGStatus.InvalidArg;
+            if (HostChannel.IsCanceled(cancellation)) return IGStatus.Canceled;
 
-            for (var i = 0; i < count; i++)
+            var document = ApngDocumentCache.Acquire(path, out var status);
+            if (document is null) return status;
+
+            try
             {
-                frames[i] = new IGAnimationFrameInfo
+                var count = document.FrameCount;
+                var frames = (IGAnimationFrameInfo*)NativeMemory.Alloc(
+                    (nuint)(sizeof(IGAnimationFrameInfo) * count));
+
+                for (var i = 0; i < count; i++)
                 {
-                    DurationMs = document.GetFrameDurationMs(i),
-                    HasAlpha = document.HasAlpha ? 1 : 0,
-                };
+                    frames[i] = new IGAnimationFrameInfo
+                    {
+                        DurationMs = document.GetFrameDurationMs(i),
+                        HasAlpha = document.HasAlpha ? 1 : 0,
+                    };
+                }
+
+                outInfo->FrameCount = count;
+                outInfo->LoopCount = document.LoopCount;
+                outInfo->Frames = frames;
+
+                lock (_bufLock)
+                {
+                    _liveFrameArrays.Add((nint)frames);
+                }
+                return IGStatus.OK;
             }
-
-            outInfo->FrameCount = count;
-            outInfo->LoopCount = document.LoopCount;
-            outInfo->Frames = frames;
-
-            lock (_bufLock)
+            finally
             {
-                _liveFrameArrays.Add((nint)frames);
+                ApngDocumentCache.Release(document);
             }
-            return IGStatus.OK;
         }
-        finally
+        catch (OutOfMemoryException)
         {
-            ApngDocumentCache.Release(document);
+            // NativeMemory.Alloc throws instead of returning null
+            return IGStatus.OutOfMemory;
+        }
+        catch (Exception ex)
+        {
+            HostChannel.Log(4, $"ApngCodec: GetAnimationInfo failed. {ex}");
+            return IGStatus.Internal;
         }
     }
 
@@ -243,15 +298,19 @@ internal static unsafe class ApngCodecPlugin
     {
         if (info == null || info->Frames == null) return;
 
-        var key = (nint)info->Frames;
-        lock (_bufLock)
+        try
         {
-            if (!_liveFrameArrays.Remove(key)) return;
-        }
+            var key = (nint)info->Frames;
+            lock (_bufLock)
+            {
+                if (!_liveFrameArrays.Remove(key)) return;
+            }
 
-        NativeMemory.Free((void*)key);
-        info->Frames = null;
-        info->FrameCount = 0;
+            NativeMemory.Free((void*)key);
+            info->Frames = null;
+            info->FrameCount = 0;
+        }
+        catch { }
     }
 
 
@@ -260,16 +319,21 @@ internal static unsafe class ApngCodecPlugin
     {
         if (buf == null || buf->Data == null) return;
 
-        var key = (nint)buf->Data;
-        lock (_bufLock)
+        // The host may call this from any thread, including the GC finalizer thread.
+        try
         {
-            // Remove-first also guards against a double free.
-            if (!_liveBuffers.Remove(key)) return;
-        }
+            var key = (nint)buf->Data;
+            lock (_bufLock)
+            {
+                // Remove-first also guards against a double free.
+                if (!_liveBuffers.Remove(key)) return;
+            }
 
-        NativeMemory.Free((void*)key);
-        buf->Data = null;
-        buf->ReleaseContext = null;
+            NativeMemory.Free((void*)key);
+            buf->Data = null;
+            buf->ReleaseContext = null;
+        }
+        catch { }
     }
 
 
@@ -296,9 +360,9 @@ internal static unsafe class ApngCodecPlugin
         {
             if (frameIndex < 0 || frameIndex >= document.FrameCount) return IGStatus.InvalidArg;
 
+            // Alloc throws OutOfMemoryException rather than returning null; the entry points map it.
             var size = document.FrameByteSize;
             var pixels = (byte*)NativeMemory.Alloc((nuint)size);
-            if (pixels == null) return IGStatus.OutOfMemory;
 
             IGStatus composeStatus;
             try

@@ -135,16 +135,27 @@ internal sealed unsafe class ApngDocument : IDisposable
             return null;
         }
 
-        var width = apng.IHDRChunk.Width;
-        var height = apng.IHDRChunk.Height;
-        if (width <= 0 || height <= 0 || (long)width * height * 4L > int.MaxValue)
+        // Header reads, the chunk scan and the frame table are all file-driven, and this runs
+        // behind an ABI boundary where an escaping exception is fatal. Keep them guarded.
+        try
         {
+            var width = apng.IHDRChunk.Width;
+            var height = apng.IHDRChunk.Height;
+            if (width <= 0 || height <= 0 || (long)width * height * 4L > int.MaxValue)
+            {
+                status = IGStatus.DecodeFailed;
+                return null;
+            }
+
+            status = IGStatus.OK;
+            return new ApngDocument(apng, fileBytes, width, height);
+        }
+        catch (Exception ex)
+        {
+            HostChannel.Log(4, $"ApngCodec: '{Path.GetFileName(filePath)}' has an unusable frame table ({ex.Message}).");
             status = IGStatus.DecodeFailed;
             return null;
         }
-
-        status = IGStatus.OK;
-        return new ApngDocument(apng, fileBytes, width, height);
     }
 
 

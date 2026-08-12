@@ -59,7 +59,7 @@
         },
         {
             "label": "publish: Windows ARM64",
-            "detail": "Native AOT -> dist/win-arm64. Run on Windows (x64 host works with the ARM64 VC tools).",
+            "detail": "Native AOT -> dist/win-arm64. Run on Windows (an x64 host works with the ARM64 VC tools).",
             "type": "shell",
             // Same vswhere/PATH caveat as the x64 task above.
             "command": "$env:PATH = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer;' + $env:PATH; dotnet publish source/ApngCodec.csproj -c Release -r win-arm64 -p:Platform=ARM64 -o dist/win-arm64; exit $LASTEXITCODE",
@@ -115,14 +115,51 @@
             "problemMatcher": "$msCompile",
             "group": "build"
         },
+
         {
-            "label": "publish: Windows (all)",
-            "detail": "Both Windows architectures, one after the other.",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "publish: Windows x64",
-                "publish: Windows ARM64"
+            "label": "pack",
+            "detail": "Publish both Windows architectures and write dist/apng-codec_<version>_<arch>.igplugin.zip.",
+            "type": "shell",
+            "command": "$env:PATH = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer;' + $env:PATH; ./pack.ps1; exit $LASTEXITCODE",
+            "options": {
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "pack: Linux/macOS",
+            "detail": "Same packaging on a Linux or macOS host (linux-x64 / osx-arm64). Needs PowerShell 7 (pwsh).",
+            "type": "process",
+            "command": "pwsh",
+            "args": [
+                "-NoProfile",
+                "-File",
+                "pack.ps1"
             ],
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "deploy: local _plugins",
+            "detail": "Publish x64 and copy it into %LOCALAPPDATA%\\ImageGlass\\_plugins for testing.",
+            "type": "shell",
+            "command": "$env:PATH = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer;' + $env:PATH; ./pack.ps1 -Rid win-x64 -Deploy; exit $LASTEXITCODE",
+            "options": {
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-Command"
+                    ]
+                }
+            },
             "problemMatcher": [],
             "group": "build"
         }

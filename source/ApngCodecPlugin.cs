@@ -12,6 +12,7 @@ while the host expects a fully composed canvas per frame. Pixels are emitted as
 */
 using ApngCodec.Apng;
 using ImageGlass.SDK.Plugins;
+using SkiaSharp;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -26,7 +27,7 @@ internal static unsafe class ApngCodecPlugin
 
     private const string PluginIdString = "Plugin_ApngCodec";
     private const string PluginNameString = "APNG Codec";
-    private const string VersionString = "1.1.0";
+    private const string VersionString = "1.2.0";
     private const string CodecIdString = "plugin.apng.codec";
     private const string CodecNameString = "APNG Codec";
 
@@ -217,6 +218,27 @@ internal static unsafe class ApngCodecPlugin
 
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static IGStatus CodecDecodeStaticRasterScaled(IGStringRef filePath, int frameIndex,
+        int maxWidth, int maxHeight, IGPixelBuffer* outBuf, void* cancellation)
+    {
+        try
+        {
+            if (maxWidth <= 0 || maxHeight <= 0) return IGStatus.InvalidArg;
+            return DecodeFrame(filePath, frameIndex, outBuf, cancellation, maxWidth, maxHeight);
+        }
+        catch (OutOfMemoryException)
+        {
+            return IGStatus.OutOfMemory;
+        }
+        catch (Exception ex)
+        {
+            HostChannel.Log(4, $"ApngCodec: DecodeStaticRasterScaled failed. {ex}");
+            return IGStatus.Internal;
+        }
+    }
+
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static IGStatus CodecDecodeAnimationFrame(IGStringRef filePath, int frameIndex,
         IGPixelBuffer* outBuf, void* cancellation)
     {
@@ -344,8 +366,10 @@ internal static unsafe class ApngCodecPlugin
     /// static-raster and animation entry points: both return the same fully composed
     /// canvas, the animation path simply gets called per frame by the host animator.
     /// </summary>
+    /// <param name="maxWidth">Box to fit, or 0 for the full canvas.</param>
+    /// <param name="maxHeight">Box to fit, or 0 for the full canvas.</param>
     private static IGStatus DecodeFrame(IGStringRef filePath, int frameIndex,
-        IGPixelBuffer* outBuf, void* cancellation)
+        IGPixelBuffer* outBuf, void* cancellation, int maxWidth = 0, int maxHeight = 0)
     {
         if (outBuf == null) return IGStatus.InvalidArg;
         *outBuf = default;
@@ -359,6 +383,12 @@ internal static unsafe class ApngCodecPlugin
         try
         {
             if (frameIndex < 0 || frameIndex >= document.FrameCount) return IGStatus.InvalidArg;
+
+            // PNG has no sub-resolution decode, so a frame is always composed at full canvas
+            // size; scaling only keeps the big buffer inside this call instead of handing it
+            // to the host to shrink and drop.
+            var (outWidth, outHeight) = FitBox(document.Width, document.Height, maxWidth, maxHeight);
+            var isScaled = outWidth != document.Width || outHeight != document.Height;
 
             // Alloc throws OutOfMemoryException rather than returning null; the entry points map it.
             var size = document.FrameByteSize;
@@ -382,10 +412,18 @@ internal static unsafe class ApngCodecPlugin
                 return composeStatus;
             }
 
+            if (isScaled)
+            {
+                var scaled = ScaleFrame(pixels, document.Width, document.Height, outWidth, outHeight);
+                NativeMemory.Free(pixels);
+                if (scaled == null) return IGStatus.Internal;
+                pixels = scaled;
+            }
+
             outBuf->Data = pixels;
-            outBuf->Width = document.Width;
-            outBuf->Height = document.Height;
-            outBuf->Stride = document.Width * 4;
+            outBuf->Width = outWidth;
+            outBuf->Height = outHeight;
+            outBuf->Stride = outWidth * 4;
             outBuf->PixelFormat = (int)IGPixelFormat.Bgra8Unorm;
             outBuf->ReleaseContext = pixels;
 
@@ -399,6 +437,50 @@ internal static unsafe class ApngCodecPlugin
         {
             ApngDocumentCache.Release(document);
         }
+    }
+
+
+    /// <summary>
+    /// Largest size inside <paramref name="maxWidth"/> x <paramref name="maxHeight"/> keeping the
+    /// aspect ratio; the source size when the box is 0 or already fits.
+    /// </summary>
+    private static (int Width, int Height) FitBox(int width, int height, int maxWidth, int maxHeight)
+    {
+        if (maxWidth <= 0 || maxHeight <= 0 || width <= 0 || height <= 0) return (width, height);
+
+        var scale = Math.Min((double)maxWidth / width, (double)maxHeight / height);
+        if (scale >= 1) return (width, height);
+
+        return (Math.Max(1, (int)Math.Round(width * scale)), Math.Max(1, (int)Math.Round(height * scale)));
+    }
+
+
+    /// <summary>
+    /// Downsamples a composed BGRA8 frame into a freshly allocated buffer, or <c>null</c> on
+    /// failure. The caller still owns <paramref name="source"/>.
+    /// </summary>
+    private static byte* ScaleFrame(byte* source, int srcWidth, int srcHeight, int dstWidth, int dstHeight)
+    {
+        var srcInfo = new SKImageInfo(srcWidth, srcHeight, SKColorType.Bgra8888, SKAlphaType.Unpremul);
+        var dstInfo = new SKImageInfo(dstWidth, dstHeight, SKColorType.Bgra8888, SKAlphaType.Unpremul);
+
+        var dest = (byte*)NativeMemory.Alloc((nuint)(dstWidth * dstHeight * 4));
+        try
+        {
+            using var srcPixmap = new SKPixmap(srcInfo, (nint)source, srcWidth * 4);
+            using var dstPixmap = new SKPixmap(dstInfo, (nint)dest, dstWidth * 4);
+
+            // Mitchell keeps downscaled thumbnails smooth without ringing, matching the host.
+            var sampling = new SKSamplingOptions(SKCubicResampler.Mitchell);
+            if (srcPixmap.ScalePixels(dstPixmap, sampling)) return dest;
+        }
+        catch (Exception ex)
+        {
+            HostChannel.Log(4, $"ApngCodec: scale to {dstWidth}x{dstHeight} failed. {ex}");
+        }
+
+        NativeMemory.Free(dest);
+        return null;
     }
 
 
@@ -506,6 +588,7 @@ internal static unsafe class ApngCodecPlugin
         _codecApi->CanHandleSignature = &CodecCanHandleSignature;
         _codecApi->LoadMetadata = &CodecLoadMetadata;
         _codecApi->DecodeStaticRaster = &CodecDecodeStaticRaster;
+        _codecApi->DecodeStaticRasterScaled = &CodecDecodeStaticRasterScaled;
         _codecApi->FreePixelBuffer = &CodecFreePixelBuffer;
 
         // All three must be non-null or the host downgrades the codec to static-raster only.

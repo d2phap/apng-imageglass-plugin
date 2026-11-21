@@ -84,6 +84,9 @@ foreach ($runtime in $Rid) {
     $publishDir = Join-Path $root "dist/$runtime"
     $staged = Join-Path $root "dist/staging/$runtime/$pluginFolder"
 
+    # Everything in the publish folder gets packed, so a file left by an older build would ship too.
+    if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
+
     Write-Host "`n=== publishing $runtime ===" -ForegroundColor Cyan
     dotnet publish (Join-Path $root 'source/ApngCodec.csproj') `
         --configuration Release --runtime $runtime -p:Platform=$platform --output $publishDir
@@ -91,14 +94,10 @@ foreach ($runtime in $Rid) {
 
     # Ship only what the host loads: no debug symbols (.pdb on Windows, .dbg on Linux, .dSYM
     # on macOS — a directory, so -File skips it anyway) and no .xml IntelliSense docs.
-    # libSkiaSharp rides along from the ImageGlass.SDK package reference; this plugin does call
-    # Skia, but ImageGlass ships its own copy next to the executable and the plugin resolves it
-    # from there, so a bundled second one is ~12 MB of dead weight.
     if (Test-Path $staged) { Remove-Item $staged -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $staged | Out-Null
     Get-ChildItem $publishDir -File |
         Where-Object { $_.Extension -notin '.pdb', '.dbg', '.dSYM', '.xml' } |
-        Where-Object { $_.Name -notlike 'libSkiaSharp*' } |
         Copy-Item -Destination $staged
 
     # A package missing either file installs cleanly and then does nothing, so fail loudly here.

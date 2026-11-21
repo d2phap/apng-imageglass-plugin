@@ -11,8 +11,6 @@ disposal operation, so the replay below is the plugin's job, not the host's.
 */
 using ImageGlass.SDK.Plugins;
 using LibAPNG;
-using SkiaSharp;
-using System.Threading;
 
 namespace ApngCodec.Apng;
 
@@ -28,7 +26,10 @@ internal sealed unsafe class ApngDocument : IDisposable
     /// </summary>
     private readonly struct ApngFrame
     {
-        public required Frame Source { get; init; }
+        /// <summary>
+        /// The frame's zlib stream: its IDAT or fdAT payloads joined in order.
+        /// </summary>
+        public required byte[] Data { get; init; }
         public required int X { get; init; }
         public required int Y { get; init; }
         public required int Width { get; init; }
@@ -41,7 +42,7 @@ internal sealed unsafe class ApngDocument : IDisposable
 
     private readonly Lock _lock = new();
     private readonly ApngFrame[] _frames;
-    private readonly byte[]? _simplePngBytes;
+    private readonly PngDecoder _decoder;
     private readonly bool _usesPreviousDisposal;
 
     private byte[]? _canvas;
@@ -139,16 +140,27 @@ internal sealed unsafe class ApngDocument : IDisposable
         // behind an ABI boundary where an escaping exception is fatal. Keep them guarded.
         try
         {
-            var width = apng.IHDRChunk.Width;
-            var height = apng.IHDRChunk.Height;
+            var ihdr = apng.IHDRChunk;
+            var width = ihdr.Width;
+            var height = ihdr.Height;
             if (width <= 0 || height <= 0 || (long)width * height * 4L > int.MaxValue)
             {
                 status = IGStatus.DecodeFailed;
                 return null;
             }
 
+            var colorInfo = PngChunkScanner.Scan(fileBytes);
+            var decoder = PngDecoder.Create(ihdr.BitDepth, ihdr.ColorType, ihdr.CompressionMethod,
+                ihdr.FilterMethod, ihdr.InterlaceMethod, colorInfo.Palette, colorInfo.Transparency);
+            if (decoder is null)
+            {
+                HostChannel.Log(4, $"ApngCodec: '{Path.GetFileName(filePath)}' has an invalid pixel layout (color type {ihdr.ColorType}, {ihdr.BitDepth}-bit).");
+                status = IGStatus.DecodeFailed;
+                return null;
+            }
+
             status = IGStatus.OK;
-            return new ApngDocument(apng, fileBytes, width, height);
+            return new ApngDocument(apng, colorInfo, decoder, fileBytes.Length, width, height);
         }
         catch (Exception ex)
         {
@@ -159,27 +171,23 @@ internal sealed unsafe class ApngDocument : IDisposable
     }
 
 
-    private ApngDocument(APNG apng, byte[] fileBytes, int width, int height)
+    private ApngDocument(APNG apng, PngColorInfo colorInfo, PngDecoder decoder, long fileSize, int width, int height)
     {
         Width = width;
         Height = height;
-        FileSizeBytes = fileBytes.Length;
-
-        var colorInfo = PngChunkScanner.Scan(fileBytes);
+        FileSizeBytes = fileSize;
         IccProfile = colorInfo.IccProfile;
         ColorSpace = colorInfo.ColorSpace;
+        _decoder = decoder;
 
         var sourceFrames = apng.Frames;
         if (apng.IsSimplePNG || sourceFrames.Length == 0)
         {
-            // Not animated: LibAPNG does not attach PLTE/tRNS to the default image, so
-            // decode the original file as-is instead of re-assembling it.
-            _simplePngBytes = fileBytes;
             _frames =
             [
                 new ApngFrame
                 {
-                    Source = apng.DefaultImage,
+                    Data = JoinImageData(apng.DefaultImage.IDATChunks),
                     X = 0,
                     Y = 0,
                     Width = width,
@@ -209,7 +217,7 @@ internal sealed unsafe class ApngDocument : IDisposable
 
                 _frames[i] = new ApngFrame
                 {
-                    Source = source,
+                    Data = JoinImageData(source.IDATChunks),
                     X = (int)fctl.XOffset,
                     Y = (int)fctl.YOffset,
                     Width = (int)fctl.Width,
@@ -295,20 +303,14 @@ internal sealed unsafe class ApngDocument : IDisposable
     {
         ref readonly var frame = ref _frames[index];
 
-        byte[] pngBytes;
-        if (_simplePngBytes is not null)
+        // fcTL is file-driven: a frame bigger than the canvas is malformed and would only allocate to be clipped.
+        if (frame.Width <= 0 || frame.Height <= 0 || frame.Width > Width || frame.Height > Height)
         {
-            pngBytes = _simplePngBytes;
-        }
-        else
-        {
-            // GetStream patches the IHDR chunk data it shares with the parent APNG, so it
-            // must not run concurrently: callers reach here holding _lock.
-            using var stream = frame.Source.GetStream();
-            pngBytes = stream.ToArray();
+            HostChannel.Log(4, $"ApngCodec: frame {index} is {frame.Width}x{frame.Height} on a {Width}x{Height} canvas.");
+            return IGStatus.DecodeFailed;
         }
 
-        var pixels = DecodePng(pngBytes, out var srcWidth, out var srcHeight);
+        var pixels = _decoder.Decode(frame.Data, frame.Width, frame.Height);
         if (pixels is null)
         {
             HostChannel.Log(4, $"ApngCodec: frame {index} could not be decoded.");
@@ -317,11 +319,11 @@ internal sealed unsafe class ApngDocument : IDisposable
 
         if (frame.Blend == BlendOps.APNGBlendOpSource)
         {
-            CopyRect(pixels, srcWidth, srcHeight, frame.X, frame.Y);
+            CopyRect(pixels, frame.Width, frame.Height, frame.X, frame.Y);
         }
         else
         {
-            BlendRect(pixels, srcWidth, srcHeight, frame.X, frame.Y);
+            BlendRect(pixels, frame.Width, frame.Height, frame.X, frame.Y);
         }
 
         return IGStatus.OK;
@@ -466,33 +468,23 @@ internal sealed unsafe class ApngDocument : IDisposable
     // ------------------------------ Helpers ------------------------------
 
     /// <summary>
-    /// Decodes a standalone PNG stream to 32bpp straight-alpha BGRA, the layout the host
-    /// expects for <see cref="IGPixelFormat.Bgra8Unorm"/>.
+    /// Joins a frame's data chunks into the single zlib stream they split between them.
     /// </summary>
-    private static byte[]? DecodePng(byte[] pngBytes, out int width, out int height)
+    private static byte[] JoinImageData(List<IDATChunk> chunks)
     {
-        width = 0;
-        height = 0;
+        if (chunks.Count == 1) return chunks[0].ChunkData;
 
-        using var data = SKData.CreateCopy(pngBytes);
-        using var codec = SKCodec.Create(data);
-        if (codec is null) return null;
+        var total = 0L;
+        foreach (var chunk in chunks) total += chunk.ChunkData.Length;
 
-        width = codec.Info.Width;
-        height = codec.Info.Height;
-        if (width <= 0 || height <= 0) return null;
-
-        var info = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Unpremul);
-        var pixels = new byte[info.BytesSize];
-
-        SKCodecResult result;
-        fixed (byte* dest = pixels)
+        var data = new byte[total];
+        var offset = 0;
+        foreach (var chunk in chunks)
         {
-            result = codec.GetPixels(info, (nint)dest);
+            chunk.ChunkData.CopyTo(data, offset);
+            offset += chunk.ChunkData.Length;
         }
-
-        // IncompleteInput still yields a usable (partially decoded) frame.
-        return result is SKCodecResult.Success or SKCodecResult.IncompleteInput ? pixels : null;
+        return data;
     }
 
 

@@ -24,16 +24,24 @@ internal readonly struct PngColorInfo
     public IGColorSpace ColorSpace { get; init; }
 
     /// <summary>
+    /// Raw <c>PLTE</c> payload (RGB triples), or <c>null</c> when absent.
+    /// </summary>
+    public byte[]? Palette { get; init; }
+
+    /// <summary>
+    /// Raw <c>tRNS</c> payload, or <c>null</c> when absent.
+    /// </summary>
+    public byte[]? Transparency { get; init; }
+
+    /// <summary>
     /// Whether a <c>tRNS</c> chunk makes an otherwise opaque colour type transparent.
     /// </summary>
-    public bool HasTransparencyChunk { get; init; }
+    public bool HasTransparencyChunk => Transparency is not null;
 }
 
 
 /// <summary>
-/// Minimal forward scan over the PNG chunk stream for the ancillary chunks LibAPNG
-/// does not surface (<c>iCCP</c>, <c>sRGB</c>, <c>tRNS</c>). Stops at the first
-/// <c>IDAT</c>, which the spec requires all three to precede.
+/// Scans for <c>iCCP</c>, <c>sRGB</c>, <c>PLTE</c> and <c>tRNS</c>, stopping at the first <c>IDAT</c> that the spec requires them to precede.
 /// </summary>
 internal static class PngChunkScanner
 {
@@ -44,8 +52,9 @@ internal static class PngChunkScanner
     public static PngColorInfo Scan(byte[] fileBytes)
     {
         byte[]? icc = null;
+        byte[]? palette = null;
+        byte[]? transparency = null;
         var colorSpace = IGColorSpace.Unknown;
-        var hasTrns = false;
 
         // PNG signature is 8 bytes; every chunk is length(4) + type(4) + data + crc(4).
         var offset = 8;
@@ -69,8 +78,12 @@ internal static class PngChunkScanner
                     colorSpace = IGColorSpace.Srgb;
                     break;
 
+                case "PLTE":
+                    palette = fileBytes.AsSpan(dataStart, length).ToArray();
+                    break;
+
                 case "tRNS":
-                    hasTrns = true;
+                    transparency = fileBytes.AsSpan(dataStart, length).ToArray();
                     break;
             }
 
@@ -81,7 +94,8 @@ internal static class PngChunkScanner
         {
             IccProfile = icc,
             ColorSpace = icc is null ? colorSpace : IGColorSpace.Unknown,
-            HasTransparencyChunk = hasTrns,
+            Palette = palette,
+            Transparency = transparency,
         };
     }
 

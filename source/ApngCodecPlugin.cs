@@ -12,7 +12,6 @@ while the host expects a fully composed canvas per frame. Pixels are emitted as
 */
 using ApngCodec.Apng;
 using ImageGlass.SDK.Plugins;
-using SkiaSharp;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -27,11 +26,11 @@ internal static unsafe class ApngCodecPlugin
 
     private const string PluginIdString = "Plugin_ApngCodec";
     private const string PluginNameString = "APNG Codec";
-    private const string VersionString = "1.2.0";
+    private const string VersionString = "1.3.0";
     private const string CodecIdString = "plugin.apng.codec";
     private const string CodecNameString = "APNG Codec";
 
-    // Both are declared; the user unticks ".png" in Settings > Plugins to leave it to Skia.
+    // Both are declared; the user unticks ".png" in Settings > Plugins to leave it to the built-in decoder.
     private static readonly string[] DecodeExtensions = [".apng", ".png"];
 
     /// <summary>PNG signature shared by every APNG file.</summary>
@@ -414,9 +413,15 @@ internal static unsafe class ApngCodecPlugin
 
             if (isScaled)
             {
-                var scaled = ScaleFrame(pixels, document.Width, document.Height, outWidth, outHeight);
-                NativeMemory.Free(pixels);
-                if (scaled == null) return IGStatus.Internal;
+                byte* scaled;
+                try
+                {
+                    scaled = Resampler.Downscale(pixels, document.Width, document.Height, outWidth, outHeight);
+                }
+                finally
+                {
+                    NativeMemory.Free(pixels);
+                }
                 pixels = scaled;
             }
 
@@ -452,35 +457,6 @@ internal static unsafe class ApngCodecPlugin
         if (scale >= 1) return (width, height);
 
         return (Math.Max(1, (int)Math.Round(width * scale)), Math.Max(1, (int)Math.Round(height * scale)));
-    }
-
-
-    /// <summary>
-    /// Downsamples a composed BGRA8 frame into a freshly allocated buffer, or <c>null</c> on
-    /// failure. The caller still owns <paramref name="source"/>.
-    /// </summary>
-    private static byte* ScaleFrame(byte* source, int srcWidth, int srcHeight, int dstWidth, int dstHeight)
-    {
-        var srcInfo = new SKImageInfo(srcWidth, srcHeight, SKColorType.Bgra8888, SKAlphaType.Unpremul);
-        var dstInfo = new SKImageInfo(dstWidth, dstHeight, SKColorType.Bgra8888, SKAlphaType.Unpremul);
-
-        var dest = (byte*)NativeMemory.Alloc((nuint)(dstWidth * dstHeight * 4));
-        try
-        {
-            using var srcPixmap = new SKPixmap(srcInfo, (nint)source, srcWidth * 4);
-            using var dstPixmap = new SKPixmap(dstInfo, (nint)dest, dstWidth * 4);
-
-            // Mitchell keeps downscaled thumbnails smooth without ringing, matching the host.
-            var sampling = new SKSamplingOptions(SKCubicResampler.Mitchell);
-            if (srcPixmap.ScalePixels(dstPixmap, sampling)) return dest;
-        }
-        catch (Exception ex)
-        {
-            HostChannel.Log(4, $"ApngCodec: scale to {dstWidth}x{dstHeight} failed. {ex}");
-        }
-
-        NativeMemory.Free(dest);
-        return null;
     }
 
 
@@ -534,7 +510,7 @@ internal static unsafe class ApngCodecPlugin
         _capability->CodecName = MakeStringRef(_bufCodecName, CodecNameString.Length);
 
         // Enabling a plugin is an act of trust, so the host honors these as reported. Claiming
-        // ".png" is deliberate: the user unticks it in Settings > Plugins to leave it to Skia.
+        // ".png" is deliberate: the user unticks it in Settings > Plugins to leave it to the built-in decoder.
         _capability->MetadataPriority = 200;
         _capability->DecodePriority = 200;
 

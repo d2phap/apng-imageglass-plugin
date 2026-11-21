@@ -48,12 +48,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+      - name: Setup .NET 11 SDK
+        uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 11.0.x
 
       - name: Install native AOT prerequisites (Linux)
         if: runner.os == 'Linux'
@@ -81,20 +81,14 @@ jobs:
 
       - name: Stage the plugin folder
         # Lay the payload out as the folder users copy into ImageGlass's _plugins directory,
-        # minus three things:
-        #   - debug symbols: .pdb on Windows, .dbg on Linux, .dSYM (a directory) on macOS;
-        #   - libSkiaSharp: ImageGlass already ships it next to its own executable, so the
-        #     plugin resolves it from the host and a bundled second copy is dead weight
-        #     (~12 MB of library plus ~80 MB of symbols);
-        #   - .xml: the SDK's IntelliSense docs ride along from the package reference and are
-        #     ~120 KB of nothing the host ever reads.
+        # minus debug symbols (.pdb on Windows, .dbg on Linux, .dSYM directory on macOS) and the
+        # SDK's .xml IntelliSense docs, which ride along from the package reference.
         shell: pwsh
         run: |
           $staged = Join-Path "staging" $env:PLUGIN_FOLDER
           New-Item -ItemType Directory -Force -Path $staged | Out-Null
           Get-ChildItem "dist/${{ matrix.rid }}" -File |
             Where-Object { $_.Extension -notin ".pdb", ".dbg", ".dSYM", ".xml" } |
-            Where-Object { $_.Name -notlike "libSkiaSharp*" } |
             Copy-Item -Destination $staged
           Get-ChildItem $staged | Select-Object Name, Length
 
@@ -105,7 +99,7 @@ jobs:
         run: Compress-Archive -Path "staging/$env:PLUGIN_FOLDER" -DestinationPath "apng-codec_${{ inputs.version }}_${{ matrix.arch }}.igplugin.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apng-codec_${{ matrix.arch }}
           path: apng-codec_${{ inputs.version }}_${{ matrix.arch }}.igplugin.zip
@@ -118,12 +112,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history for release-note generation
 
       - name: Download all platform packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

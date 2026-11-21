@@ -4,7 +4,6 @@ Copyright (C) 2026 DUONG DIEU PHAP
 MIT License
 */
 using ImageGlass.SDK.Plugins;
-using System.Threading;
 
 namespace ApngCodec.Apng;
 

@@ -10,6 +10,8 @@
     <OutputType>Library</OutputType>
     <PublishAot>true</PublishAot>
     <NativeLib>Shared</NativeLib>
+    <!-- .NET 11 prefixes Unix libraries with "lib" by default; keep the name every release has shipped. -->
+    <UseNativeLibPrefix>false</UseNativeLibPrefix>
     <SelfContained>true</SelfContained>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -20,7 +22,7 @@
     <RootNamespace>ApngCodec</RootNamespace>
 
     <!-- Keep in sync with "version" in igplugin.json. -->
-    <Version>1.3.0</Version>
+    <Version>1.4.1</Version>
     <Product>APNG Codec for ImageGlass</Product>
     <Authors>Duong Dieu Phap</Authors>
     <Copyright>Copyright (C) 2026 Duong Dieu Phap</Copyright>
@@ -42,20 +44,18 @@
   </ItemGroup>
 
   <!--
-    The host only accepts a manifest "executable" carrying the target platform's native
-    library extension, so rewrite the published copy for non-Windows runtimes. The
-    checked-in manifest keeps the Windows name.
+    The host only accepts a manifest "executable" naming the published native library, so
+    rewrite the published copy with the file name Native AOT actually wrote. The checked-in
+    manifest keeps the Windows name.
   -->
   <Target Name="StampPluginManifestExecutable" AfterTargets="Publish">
     <PropertyGroup>
-      <_PluginLibExt>.dll</_PluginLibExt>
-      <_PluginLibExt Condition="$(RuntimeIdentifier.StartsWith('linux'))">.so</_PluginLibExt>
-      <_PluginLibExt Condition="$(RuntimeIdentifier.StartsWith('osx'))">.dylib</_PluginLibExt>
+      <_PluginLibName>$([System.IO.Path]::GetFileName('$(NativeBinary)'))</_PluginLibName>
       <_PluginManifest>$(PublishDir)igplugin.json</_PluginManifest>
       <_StampManifest>false</_StampManifest>
-      <_StampManifest Condition="'$(_PluginLibExt)' != '.dll' And Exists('$(_PluginManifest)')">true</_StampManifest>
+      <_StampManifest Condition="'$(_PluginLibName)' != '' And '$(_PluginLibName)' != '$(AssemblyName).dll' And Exists('$(_PluginManifest)')">true</_StampManifest>
       <_PluginManifestText Condition="'$(_StampManifest)' == 'true'">$([System.IO.File]::ReadAllText('$(_PluginManifest)'))</_PluginManifestText>
-      <_PluginManifestText Condition="'$(_StampManifest)' == 'true'">$(_PluginManifestText.Replace('$(AssemblyName).dll', '$(AssemblyName)$(_PluginLibExt)'))</_PluginManifestText>
+      <_PluginManifestText Condition="'$(_StampManifest)' == 'true'">$(_PluginManifestText.Replace('$(AssemblyName).dll', '$(_PluginLibName)'))</_PluginManifestText>
     </PropertyGroup>
 
     <WriteLinesToFile Condition="'$(_StampManifest)' == 'true'"
@@ -65,6 +65,6 @@
                       WriteOnlyWhenDifferent="true" />
 
     <Message Condition="'$(_StampManifest)' == 'true'" Importance="high"
-             Text="igplugin.json executable stamped as $(AssemblyName)$(_PluginLibExt)" />
+             Text="igplugin.json executable stamped as $(_PluginLibName)" />
   </Target>
 </Project>

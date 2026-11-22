@@ -92,6 +92,12 @@ jobs:
             Copy-Item -Destination $staged
           Get-ChildItem $staged | Select-Object Name, Length
 
+          # ImageGlass refuses a package whose manifest names a library it does not ship.
+          $libName = (Get-Content (Join-Path $staged "igplugin.json") -Raw | ConvertFrom-Json).executable
+          if ([string]::IsNullOrWhiteSpace($libName) -or -not (Test-Path (Join-Path $staged $libName))) {
+            throw "staged package is missing '$libName', the manifest's executable"
+          }
+
       - name: Pack apng-codec_${{ inputs.version }}_${{ matrix.arch }}.igplugin.zip
         # Zip on every platform: ILCompiler chmods a shared library to 644, so there is no
         # executable bit for zip to lose, and Settings > Plugins > Add only reads .zip.

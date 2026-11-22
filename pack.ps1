@@ -73,14 +73,6 @@ foreach ($runtime in $Rid) {
     # The release assets say "mac", not the RID's "osx"; keep the local packages identical.
     $arch = if ($runtime -eq 'osx-arm64') { 'mac-arm64' } else { $runtime }
 
-    # Native AOT names the shared library per platform, and the csproj rewrites the published
-    # manifest's "executable" to match — so the file to verify differs by target too.
-    $libName = switch -Wildcard ($runtime) {
-        'linux-*' { 'ApngCodec.so' }
-        'osx-*'   { 'ApngCodec.dylib' }
-        default   { 'ApngCodec.dll' }
-    }
-
     $publishDir = Join-Path $root "dist/$runtime"
     $staged = Join-Path $root "dist/staging/$runtime/$pluginFolder"
 
@@ -100,11 +92,12 @@ foreach ($runtime in $Rid) {
         Where-Object { $_.Extension -notin '.pdb', '.dbg', '.dSYM', '.xml' } |
         Copy-Item -Destination $staged
 
-    # A package missing either file installs cleanly and then does nothing, so fail loudly here.
-    foreach ($required in $libName, 'igplugin.json') {
-        if (-not (Test-Path (Join-Path $staged $required))) {
-            throw "package for $runtime is missing $required"
-        }
+    # ImageGlass refuses a package whose manifest names a library it does not ship, so fail loudly here.
+    $stagedManifest = Join-Path $staged 'igplugin.json'
+    if (-not (Test-Path $stagedManifest)) { throw "package for $runtime is missing igplugin.json" }
+    $libName = (Get-Content $stagedManifest -Raw | ConvertFrom-Json).executable
+    if ([string]::IsNullOrWhiteSpace($libName) -or -not (Test-Path (Join-Path $staged $libName))) {
+        throw "package for $runtime is missing '$libName', the manifest's executable"
     }
 
     $zip = Join-Path $root "dist/apng-codec_${version}_$arch.igplugin.zip"
